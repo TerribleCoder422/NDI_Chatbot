@@ -1,0 +1,129 @@
+interface_status:
+  description: Get the operational and admin status of an interface or list of interfaces.
+  handler: handlers.interfaces.get_interface_status
+  examples:
+    - What is the status of eth1/33?
+    - Are any interfaces down?
+    - Show all interfaces that are administratively down.
+    - Which interfaces are up but not passing traffic?
+  patterns:
+    - show all interfaces
+    - list interfaces
+    - interface status
+    - interfaces down
+    - interfaces up
+    - admin status of interfaces
+    - operational status of interfaces
+    - What is the status of eth1/33?
+    - Are any interfaces down?
+    - Show all interfaces that are administratively down.
+    - Which interfaces are up but not passing traffic?
+  required_params: []
+  optional_params: [interfaceName, adminStatus, operStatus]
+
+interface_errors:
+  description: Get error counters and anomaly scores for interfaces.
+  handler: handlers.interfaces.get_interfaces_with_errors
+  examples:
+    - Show error counts for all interfaces.
+    - Which interfaces have the highest anomaly score?
+    - List interfaces with errorsTotal greater than 0.
+  patterns:
+    - interface errors
+    - show interface errors
+    - interfaces with errors
+    - interfaces with anomaly score
+    - Show error counts for all interfaces.
+    - Which interfaces have the highest anomaly score?
+    - List interfaces with errorsTotal greater than 0.
+  required_params: []
+  optional_params: [interfaceName, anomalyScore, errorsTotal]
+
+interface_type:
+  description: Query interface types (physical, vpc, etc) and their statuses.
+  handler: handlers.interfaces.get_interface_status
+  examples:
+    - List all vpc interfaces.
+    - How many physical interfaces are down?
+    - Show all port-channel interfaces.
+  patterns:
+    - interface type
+    - vpc interfaces
+    - port-channel interfaces
+    - physical interfaces
+    - List all vpc interfaces.
+    - How many physical interfaces are down?
+    - Show all port-channel interfaces.
+  required_params: []
+  optional_params: [interfaceType, interfaceName]
+
+interface_description:
+  description: Get or search interface descriptions.
+  handler: handlers.interfaces.get_interface_status
+  examples:
+    - Show description for eth1/33.
+    - Which interfaces have a description containing "Rack12"?
+  patterns:
+    - interface description
+    - show interface description
+    - interfaces with description
+    - Show description for eth1/33.
+    - Which interfaces have a description containing "Rack12"?
+  required_params: []
+  optional_params: [interfaceName, interfaceDescription]
+
+interface_neighbor:
+  description: Query L2/L3 neighbor information for interfaces.
+  handler: handlers.interfaces.get_interface_status
+  examples:
+    - Show neighbors for port-channel4.
+    - Which interfaces have no neighbors?
+  patterns:
+    - interface neighbors
+    - show interface neighbors
+    - interfaces with no neighbors
+    - Show neighbors for port-channel4.
+    - Which interfaces have no neighbors?
+  required_params: []
+  optional_params: [interfaceName, neighborInfo]
+
+interface_bandwidth:
+  description: Query bandwidth and speed for interfaces.
+  handler: handlers.interfaces.get_interface_status
+  examples:
+    - What is the port speed of eth1/33?
+    - List all interfaces with port speed 0.
+  patterns:
+    - interface bandwidth
+    - interface speed
+    - port speed
+    - What is the port speed of eth1/33?
+    - List all interfaces with port speed 0.
+  required_params: []
+  optional_params: [interfaceName, portSpeed]
+
+interface_summary_stats:
+  description: Get a conversational summary and statistics breakdown for all interfaces (status, type, anomaly, top errors, etc).
+  handler: handlers.interfaces.get_interface_summary_stats
+  examples:
+    - Give me a summary of all interfaces.
+    - Show interface statistics.
+    - How many interfaces are down?
+    - What's the overall interface health?
+    - List top interfaces by errors or anomaly score.
+    - Interface summary breakdown.
+  patterns:
+    - interface summary
+    - interface statistics
+    - interface stats
+    - summary of interfaces
+    - show interface summary
+    - show interface statistics
+    - how many interfaces are down
+    - top interfaces by errors
+    - top interfaces by anomaly
+    - interface health breakdown
+    - overall interface health
+    - interface summary breakdown
+  required_params: []
+  optional_params: []
