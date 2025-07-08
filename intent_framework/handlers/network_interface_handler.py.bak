@@ -1,0 +1,565 @@
+#!/usr/bin/env python3
+"""
+Network Interface Handler for NDI Chatbot
+This module provides a handler for network interface queries.
+"""
+
+import logging
+from typing import Dict, Any, List, Optional, Union
+import json
+import traceback
+from datetime import datetime
+import re
+from ..handlers.base_handler import BaseHandler
+from agents.verified_endpoints import get_ndi_endpoint, get_endpoints_for_intent
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class NetworkInterfaceHandler(BaseHandler):
+    """
+    Handler for network interface queries
+    
+    This handler processes queries related to network interfaces and
+    retrieves data from the appropriate API endpoints.
+    """
+    
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        """
+        Initialize the network interface handler
+        
+        Args:
+            config: Optional configuration dictionary
+        """
+        super().__init__(config)
+        
+        # Default base URL
+        self.base_url = "https://10.6.11.10"  # Default Nexus Dashboard URL
+        
+        # Override base URL with config if provided
+        if config and 'api_base_url' in config:
+            self.base_url = config.get('api_base_url')
+        
+        # Get verified endpoints from verified_endpoints.py
+        # For interfaces, we use the verified endpoints from NDI_ENDPOINTS
+        self.interface_endpoints = get_endpoints_for_intent("network_interfaces")
+        
+        # If no verified endpoints found, use fallback endpoints
+        if not self.interface_endpoints:
+            logger.warning("No verified endpoints found for network_interfaces intent. Using fallback endpoints.")
+            self.interface_endpoint = f"{self.base_url}/sedgeapi/v1/cisco-nir/api/api/v1/interfaces/summary"
+            self.device_interface_endpoint = f"{self.base_url}/sedgeapi/v1/cisco-nir/api/api/v1/interfaces/details"
+        else:
+            # Use the first endpoint as the default interface endpoint
+            self.interface_endpoint = f"{self.base_url}{self.interface_endpoints[0]}"
+            # Use the second endpoint as the device interface endpoint if available
+            if len(self.interface_endpoints) > 1:
+                self.device_interface_endpoint = f"{self.base_url}{self.interface_endpoints[1]}"
+            else:
+                self.device_interface_endpoint = self.interface_endpoint
+            
+            logger.info(f"Using verified endpoints: {self.interface_endpoint}, {self.device_interface_endpoint}")
+        
+        # Override with config if provided
+        if config:
+            if 'interface_endpoint' in config:
+                self.interface_endpoint = config.get('interface_endpoint')
+            if 'device_interface_endpoint' in config:
+                self.device_interface_endpoint = config.get('device_interface_endpoint')
+        
+        logger.info("NetworkInterfaceHandler initialized")
+    
+    def handle(self, entities: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Handle network interface intent
+        
+        Args:
+            entities: Validated entities
+            context: Context information
+            
+        Returns:
+            Response dictionary
+        """
+        try:
+            # Log the handling of this intent
+            logger.info(f"[NetworkInterfaceHandler] Handling network_interfaces intent with entities: {entities}")
+            
+            # Enhanced entity processing: normalize entity names and handle aliases
+            normalized_entities = self._normalize_entities(entities)
+            logger.info(f"[NetworkInterfaceHandler] Normalized entities: {normalized_entities}")
+            
+            # Determine which endpoint to use based on entities
+            if 'device' in normalized_entities and normalized_entities['device']:
+                # Use device-specific endpoint with proper error handling
+                device = normalized_entities['device']
+                
+                # Validate device parameter before using it in endpoint format
+                if not device or not isinstance(device, str):
+                    logger.error(f"[NetworkInterfaceHandler] Invalid device parameter: {device}")
+                    return {
+                        "success": False,
+                        "message": "Invalid device parameter provided",
+                        "data": {},
+                        "data_source": "None - Invalid parameter",
+                        "timestamp": self._get_current_timestamp(),
+                        "error": "Device parameter must be a non-empty string"
+                    }
+                
+                endpoint = self.device_interface_endpoint.format(device=device)
+                logger.info(f"[NetworkInterfaceHandler] Using device-specific endpoint for device: {device}")
+            else:
+                # Use general endpoint
+                endpoint = self.interface_endpoint
+                logger.info("[NetworkInterfaceHandler] Using general interface endpoint")
+            
+            # Get interface data from NDI API
+            logger.info("[NetworkInterfaceHandler] Retrieving interface data from NDI API")
+            response_data, success = self._make_api_call(endpoint)
+            
+            # Log data source information
+            data_source = "NDI API - Real Data"
+            self._using_cached_data = hasattr(self, '_cache_timestamp')
+            if self._using_cached_data:
+                data_source = f"Cached NDI API Data (timestamp: {getattr(self, '_cache_timestamp', 'unknown')})"
+            logger.info(f"[NetworkInterfaceHandler] Data source: {data_source}")
+            
+            if success:
+                interface_data = response_data
+                
+                # Check if we got an empty response
+                if not interface_data or (isinstance(interface_data, dict) and not interface_data):
+                    logger.warning("[NetworkInterfaceHandler] Empty or invalid response from API")
+                    
+                    # If we were trying to get details, try the summary endpoint as fallback
+                    if endpoint.endswith('/protocols/details'):
+                        logger.warning("[NetworkInterfaceHandler] Trying fallback to summary endpoint")
+                        summary_endpoint = endpoint.replace('/protocols/details', '/interfaces/summary')
+                        logger.info(f"[NetworkInterfaceHandler] Trying fallback endpoint: {summary_endpoint}")
+                        
+                        # Make the fallback API call
+                        fallback_response, fallback_success = self._make_api_call(summary_endpoint)
+                        if fallback_success and fallback_response:
+                            logger.info("[NetworkInterfaceHandler] Successfully retrieved data from fallback endpoint")
+                            interface_data = fallback_response
+                            data_source = f"{data_source} (fallback to summary)"
+                        else:
+                            logger.error("[NetworkInterfaceHandler] Fallback endpoint also failed")
+                    else:
+                        logger.error("[NetworkInterfaceHandler] No fallback endpoint available")
+            
+                # Log detailed information about the response
+                if interface_data:
+                    if isinstance(interface_data, list):
+                        logger.info(f"[NetworkInterfaceHandler] Number of raw interface records: {len(interface_data)}")
+                        if interface_data:
+                            logger.info(f"[NetworkInterfaceHandler] Sample raw interface keys: {list(interface_data[0].keys()) if isinstance(interface_data[0], dict) else 'Not a dict'}")
+                    elif isinstance(interface_data, dict):
+                        logger.info(f"[NetworkInterfaceHandler] Dictionary keys: {list(interface_data.keys())}")
+                        
+                        # Check for common API error response formats
+                        if 'error' in interface_data:
+                            logger.error(f"[NetworkInterfaceHandler] API returned error: {interface_data.get('error')}")
+                        if 'message' in interface_data:
+                            logger.info(f"[NetworkInterfaceHandler] API message: {interface_data.get('message')}")
+                else:
+                    logger.error("[NetworkInterfaceHandler] No interface data available after fallback attempts")
+                    
+                # Process the interface data if we have any
+                if not interface_data:
+                    logger.error("[NetworkInterfaceHandler] No interface data to process")
+                    return {
+                        "success": False,
+                        "message": "No interface data available from the API",
+                        "data": {},
+                        "data_source": data_source,
+                        "timestamp": self._get_current_timestamp(),
+                        "error": "No data returned from API"
+                    }
+                
+                logger.info("[NetworkInterfaceHandler] Processing interface data")
+                try:
+                    processed_data = self._process_interface_data(interface_data, entities)
+                    stats = self._get_interface_stats(processed_data) if processed_data else {}
+                except Exception as e:
+                    logger.error(f"[NetworkInterfaceHandler] Error processing interface data: {str(e)}\n{traceback.format_exc()}")
+                    return {
+                        "success": False,
+                        "message": f"Error processing interface data: {str(e)}",
+                        "data": {},
+                        "data_source": data_source,
+                        "timestamp": self._get_current_timestamp(),
+                        "error": str(e),
+                        "traceback": traceback.format_exc()
+                    }
+                        
+                # Format the final result
+                result = {
+                    "interfaces": processed_data,
+                    "stats": stats,
+                    "query": {
+                        "entities": entities,
+                        "endpoint": endpoint
+                    }
+                }
+                
+                # Log the processed data structure
+                if isinstance(processed_data, list):
+                    logger.info(f"[NetworkInterfaceHandler] Processed {len(processed_data)} interfaces")
+                
+                # Return success response with data source information
+                return {
+                    "success": True,
+                    "message": "Successfully retrieved interface data",
+                    "data": result,
+                    "data_source": data_source,
+                    "timestamp": self._get_current_timestamp(),
+                    "entity_count": len(entities) if entities else 0,
+                    "interface_count": len(processed_data) if isinstance(processed_data, list) else 0
+                }
+            else:
+                # Return error response
+                logger.warning("[NetworkInterfaceHandler] No interface data retrieved")
+                return {
+                    "success": False,
+                    "message": "Failed to retrieve interface data",
+                    "data": {},
+                    "data_source": "None - Data retrieval failed",
+                    "timestamp": self._get_current_timestamp(),
+                    "error": "No data returned from API"
+                }
+        except Exception as e:
+            # Log the error
+            logger.error(f"[NetworkInterfaceHandler] Error handling network_interfaces intent: {str(e)}\n{traceback.format_exc()}")
+            
+            # Return error response
+            return {
+                "success": False,
+                "message": f"Error handling network_interfaces intent: {str(e)}",
+                "data": {},
+                "data_source": "None - Exception occurred",
+                "timestamp": self._get_current_timestamp(),
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            }
+    
+    def _normalize_entities(self, entities: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Normalize entity names and handle aliases
+        
+        This method standardizes entity names and adds aliases to ensure
+        that all relevant forms of entities are recognized.
+        
+        Args:
+            entities: Dictionary of entities extracted from user query
+            
+        Returns:
+            Normalized entities dictionary
+        """
+        if not entities:
+            return {}
+        
+        normalized = entities.copy()
+        
+        # Handle interface name aliases
+        if 'interface' in normalized and not 'interface_name' in normalized:
+            normalized['interface_name'] = normalized['interface']
+        if 'port' in normalized and not 'interface_name' in normalized:
+            normalized['interface_name'] = normalized['port']
+        if 'name' in normalized and not 'interface_name' in normalized:
+            normalized['interface_name'] = normalized['name']
+            
+        # Handle status aliases
+        if 'state' in normalized and not 'status' in normalized:
+            normalized['status'] = normalized['state']
+            
+        # Handle device aliases
+        if 'switch' in normalized and not 'device' in normalized:
+            normalized['device'] = normalized['switch']
+        if 'router' in normalized and not 'device' in normalized:
+            normalized['device'] = normalized['router']
+            
+        # Handle interface type aliases
+        if 'if_type' in normalized and not 'type' in normalized:
+            normalized['type'] = normalized['if_type']
+            
+        logger.debug(f"[NetworkInterfaceHandler] Entity normalization: {entities} → {normalized}")
+        return normalized
+        
+    def _get_current_timestamp(self) -> str:
+        """
+        Get current timestamp in ISO format
+        
+        Returns:
+            Current timestamp string
+        """
+        return datetime.now().isoformat()
+        
+    def _process_interface_data(self, data: Any, entities: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Process interface data based on entities
+        
+        Args:
+            data: Raw interface data from API
+            entities: Dictionary of entities for filtering
+            
+        Returns:
+            Processed and filtered interface data
+        """
+        # Log the raw data structure for debugging
+        logger.info(f"[NetworkInterfaceHandler] Raw data type: {type(data)}")
+        if isinstance(data, dict):
+            logger.info(f"[NetworkInterfaceHandler] Raw data keys: {list(data.keys())}")
+            logger.debug(f"[NetworkInterfaceHandler] Raw data sample: {json.dumps(data, indent=2)[:500]}...")
+        
+        # Handle different possible response formats
+        interfaces = []
+        if isinstance(data, dict):
+            # Check for empty response
+            if not data:
+                logger.warning("[NetworkInterfaceHandler] Empty response dictionary received")
+                return []
+                
+            # Try to extract interfaces from different possible structures
+            if 'interfaces' in data:
+                interfaces = data['interfaces']
+            elif 'protocols' in data and isinstance(data['protocols'], list):
+                # Handle protocols/details endpoint response format
+                for protocol in data['protocols']:
+                    if isinstance(protocol, dict):
+                        # Check for interface details directly in protocol
+                        if 'interfaces' in protocol and isinstance(protocol['interfaces'], list):
+                            interfaces.extend(protocol['interfaces'])
+                        # Also check for interface details at the top level
+                        elif all(k in protocol for k in ['name', 'status', 'speed']):
+                            interfaces.append(protocol)
+            elif 'interface' in data:  # Handle single interface response
+                interfaces = [data['interface']]
+            elif all(isinstance(v, dict) or v is None for v in data.values()):
+                # If all values are dicts or None, treat as interface collection
+                interfaces = [v for v in data.values() if v is not None]
+            elif any(k in data for k in ['name', 'status', 'speed', 'adminStatus', 'operStatus']):
+                # If it's a flat dictionary with interface data, use it directly
+                interfaces = [data]
+            else:
+                logger.warning(f"[NetworkInterfaceHandler] Unrecognized dictionary format: {list(data.keys())}")
+        elif isinstance(data, list):
+            interfaces = data
+        else:
+            logger.warning(f"[NetworkInterfaceHandler] Unexpected data type: {type(data)}")
+        
+        # Filter out any None values
+        interfaces = [i for i in interfaces if i is not None]
+        
+        logger.info(f"[NetworkInterfaceHandler] Found {len(interfaces)} interfaces to process")
+        if interfaces and isinstance(interfaces[0], dict):
+            sample_keys = list(interfaces[0].keys())
+            logger.info(f"[NetworkInterfaceHandler] Sample interface keys: {sample_keys}")
+            
+            # Log sample interface data for debugging
+            sample_interface = {k: v for k, v in interfaces[0].items() if not isinstance(v, (dict, list))}
+            logger.debug(f"[NetworkInterfaceHandler] Sample interface data: {json.dumps(sample_interface, indent=2)}")
+        else:
+            logger.warning("[NetworkInterfaceHandler] No valid interfaces found in response")
+            
+        # Create filters based on entities
+        filters = {}
+        
+        # Handle different possible field names for interface name
+        name_fields = ['interface_name', 'name', 'interface', 'port']
+        for field in name_fields:
+            if field in entities and entities[field]:
+                filters['name'] = entities[field]
+                break
+        
+        # Handle different possible field names for status
+        status_fields = ['status', 'state', 'operStatus', 'adminStatus']
+        for field in status_fields:
+            if field in entities and entities[field]:
+                filters['status'] = entities[field]
+                break
+        
+        # Handle error status filtering
+        error_indicators = ['down', 'err', 'fail', 'disabled', 'shut']
+        if any(indicator in str(entities.get('status', '')).lower() for indicator in error_indicators):
+            filters['error_state'] = True
+        
+        # Handle interface type filtering
+        if 'type' in entities and entities['type']:
+            filters['type'] = entities['type']
+        
+        # Apply filters
+        filtered_data = self._filter_data(interfaces, filters)
+        
+        # Extract relevant fields for each interface
+        processed_interfaces = []
+        
+        for interface in filtered_data:
+            # Map fields from different possible API response formats
+            status = interface.get('status', interface.get('operStatus', 'Unknown'))
+            admin_status = interface.get('adminStatus', interface.get('adminState', 'Unknown'))
+            
+            # Get error counters from various possible field names
+            error_counters = {
+                'in_errors': interface.get('inErrors', interface.get('inputErrors', 0)),
+                'out_errors': interface.get('outErrors', interface.get('outputErrors', 0)),
+                'crc_errors': interface.get('crcErrors', 0),
+                'frame_errors': interface.get('frameErrors', 0),
+                'overrun_errors': interface.get('overrunErrors', 0),
+                'ignored_errors': interface.get('ignored', 0),
+                'collisions': interface.get('collisions', 0)
+            }
+            
+            # Convert all error counts to integers
+            error_counters = {k: int(v) if v is not None else 0 for k, v in error_counters.items()}
+            
+            # Check if interface is in error state using our comprehensive check
+            is_error_state = self._is_interface_in_error(interface)
+            
+            # If we think there's an error but no specific errors were reported, set a flag
+            if is_error_state and not any(error_counters.values()):
+                error_counters['error_state_detected'] = True
+            
+            # Get interface name, handling different possible field names
+            interface_name = next((interface.get(field) for field in 
+                                 ['name', 'interfaceName', 'ifName', 'interface'] 
+                                 if field in interface), 'Unknown')
+            
+            # Build the processed interface data
+            processed_interface = {
+                'name': interface_name,
+                'status': status,
+                'admin_status': admin_status,
+                'description': interface.get('description', interface.get('ifDescr', '')),
+                'speed': interface.get('speed', interface.get('speedMbps', 'Unknown')),
+                'mac_address': interface.get('macAddress', interface.get('physAddress', 'Unknown')),
+                'ip_address': interface.get('ipAddress', interface.get('ipv4Address', 'Unknown')),
+                'mtu': interface.get('mtu', interface.get('mtuSize', 'Unknown')),
+                'vlan': interface.get('vlan', interface.get('vlanId', 'Unknown')),
+                'has_errors': is_error_state,
+                'last_change': interface.get('lastChange', interface.get('lastStatusChange', 'Unknown')),
+                'errors': error_counters
+            }
+            
+            processed_interfaces.append(processed_interface)
+        
+        return processed_interfaces
+    
+    def _is_interface_in_error(self, interface: Dict[str, Any]) -> bool:
+        """
+        Check if an interface is in an error state based on various indicators.
+        
+        Args:
+            interface: Dictionary containing interface data
+            
+        Returns:
+            bool: True if the interface is in an error state, False otherwise
+        """
+        if not isinstance(interface, dict):
+            return False
+            
+        # Common error indicators in interface status
+        error_indicators = [
+            'down', 'err', 'fail', 'disabled', 'shut', 'inactive', 'notconnect',
+            'error', 'err-disabled', 'suspended', 'disabled', 'notPresent', 'monitor',
+            'inconsistent', 'wrong', 'unusable', 'incomplete', 'inactive', 'standby'
+        ]
+        
+        # Check various status fields that might indicate an error
+        status_fields = [
+            'status', 'operStatus', 'adminStatus', 'oper_state', 'admin_state',
+            'operationalStatus', 'adminstrativeStatus', 'state', 'operState'
+        ]
+        
+        # Check if any status field contains an error indicator
+        for field in status_fields:
+            status = str(interface.get(field, '')).lower()
+            if any(indicator in status for indicator in error_indicators):
+                return True
+        
+        # Check error counters
+        error_counters = [
+            'inErrors', 'outErrors', 'crc', 'frame', 'overrun', 
+            'ignored', 'abort', 'reset', 'lateCollision', 'deferred',
+            'collisions', 'inputErrors', 'outputErrors', 'rxErrors', 'txErrors'
+        ]
+        
+        # If any error counter is greater than 0
+        for counter in error_counters:
+            if counter in interface and int(interface.get(counter, 0)) > 0:
+                return True
+                
+        # Check for interface down states
+        admin_up = str(interface.get('adminStatus', '')).lower() in ['up', 'enabled', 'true', '1']
+        oper_up = str(interface.get('operStatus', '')).lower() in ['up', 'connected', 'true', '1']
+        
+        # If admin up but operationally down, it's considered an error
+        if admin_up and not oper_up:
+            return True
+            
+        # Check for last change timestamps that might indicate flapping
+        if 'lastChange' in interface and interface['lastChange']:
+            try:
+                # If last change was recent (within last 5 minutes), might indicate flapping
+                last_change = datetime.fromisoformat(interface['lastChange'].replace('Z', '+00:00'))
+                if (datetime.now(timezone.utc) - last_change).total_seconds() < 300:
+                    return True
+            except (ValueError, TypeError):
+                # If we can't parse the timestamp, continue
+                pass
+                
+        return False
+        
+    def _get_interface_stats(self, interfaces: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Generate statistics for interfaces
+        
+        Args:
+            interfaces: List of processed interfaces
+            
+        Returns:
+            Dictionary of interface statistics
+        """
+        stats = {
+            'total_count': len(interfaces),
+            'status_distribution': {},
+            'speed_distribution': {},
+            'error_stats': {
+                'interfaces_with_errors': 0,
+                'total_errors': 0,
+                'error_types': {}
+            }
+        }
+        
+        # Count interfaces by status and collect error information
+        for interface in interfaces:
+            status = interface.get('status', 'Unknown')
+            speed = interface.get('speed', 'Unknown')
+            
+            # Update error statistics
+            if interface.get('has_errors', False):
+                stats['error_stats']['interfaces_with_errors'] += 1
+                
+                # Count specific error types
+                errors = interface.get('errors', {})
+                for error_type, count in errors.items():
+                    if isinstance(count, (int, float)) and count > 0:
+                        stats['error_stats']['total_errors'] += count
+                        if error_type in stats['error_stats']['error_types']:
+                            stats['error_stats']['error_types'][error_type] += count
+                        else:
+                            stats['error_stats']['error_types'][error_type] = count
+            
+            # Update status distribution
+            if status in stats['status_distribution']:
+                stats['status_distribution'][status] += 1
+            else:
+                stats['status_distribution'][status] = 1
+            
+            # Update speed distribution
+            if speed in stats['speed_distribution']:
+                stats['speed_distribution'][speed] += 1
+            else:
+                stats['speed_distribution'][speed] = 1
+        
+        return stats
